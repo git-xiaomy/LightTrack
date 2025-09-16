@@ -174,18 +174,29 @@ class Lighttrack(object):
         max_valid_x = state['im_w'] - target_sz[0]/2 - 1
         max_valid_y = state['im_h'] - target_sz[1]/2 - 1
         
+        # Detect suspicious coordinates that suggest tracking failure
+        # If coordinates are very close to the exact minimum boundary, it's likely from failed tracking
+        boundary_tolerance = 5.0  # pixels
+        is_near_min_x = abs(target_pos[0] - target_sz[0]/2) < boundary_tolerance
+        is_near_min_y = abs(target_pos[1] - target_sz[1]/2) < boundary_tolerance  
+        is_near_max_x = abs(target_pos[0] - (state['im_w'] - target_sz[0]/2)) < boundary_tolerance
+        is_near_max_y = abs(target_pos[1] - (state['im_h'] - target_sz[1]/2)) < boundary_tolerance
+        
+        # Check for obvious tracking failures (very small coordinates)
+        is_obvious_failure = target_pos[0] < 20 or target_pos[1] < 20
+        
         # Only clamp if coordinates are genuinely outside valid range
         # This prevents healthy tracking from being forced to boundaries
         if target_pos[0] < min_valid_x or target_pos[0] > max_valid_x:
-            # If tracking failed, raise exception to let GUI handle recovery
-            if target_pos[0] < 10 or target_pos[0] > state['im_w'] - 10:
-                raise ValueError(f"Tracking failed: invalid x coordinate {target_pos[0]}")
+            # If near exact boundary or obvious failure, raise exception for recovery
+            if is_near_min_x or is_near_max_x or is_obvious_failure:
+                raise ValueError(f"Tracking failed: suspicious coordinate x={target_pos[0]:.1f}")
             target_pos[0] = max(min_valid_x, min(max_valid_x, target_pos[0]))
             
         if target_pos[1] < min_valid_y or target_pos[1] > max_valid_y:
-            # If tracking failed, raise exception to let GUI handle recovery  
-            if target_pos[1] < 10 or target_pos[1] > state['im_h'] - 10:
-                raise ValueError(f"Tracking failed: invalid y coordinate {target_pos[1]}")
+            # If near exact boundary or obvious failure, raise exception for recovery
+            if is_near_min_y or is_near_max_y or is_obvious_failure:
+                raise ValueError(f"Tracking failed: suspicious coordinate y={target_pos[1]:.1f}")
             target_pos[1] = max(min_valid_y, min(max_valid_y, target_pos[1]))
             
         target_sz[0] = max(10, min(state['im_w'], target_sz[0]))
