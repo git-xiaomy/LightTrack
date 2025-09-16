@@ -236,20 +236,23 @@ class LightTrackGUI:
         log_frame.rowconfigure(0, weight=1)
     
     def log(self, message):
-        """添加日志信息"""
+        """添加日志信息 - 线程安全版本"""
         def _log_safe():
-            timestamp = time.strftime("%H:%M:%S")
-            log_message = f"[{timestamp}] {message}\n"
-            self.log_text.insert(tk.END, log_message)
-            self.log_text.see(tk.END)
-            self.root.update_idletasks()
+            try:
+                timestamp = time.strftime("%H:%M:%S")
+                log_message = f"[{timestamp}] {message}\n"
+                self.log_text.insert(tk.END, log_message)
+                self.log_text.see(tk.END)
+                self.root.update_idletasks()
+            except Exception as e:
+                print(f"Log error: {e}")
         
-        # Check if we're in the main thread
-        if threading.current_thread() is threading.main_thread():
-            _log_safe()
-        else:
-            # Schedule log update in the main thread
+        # Always use after() to ensure thread safety
+        try:
             self.root.after(0, _log_safe)
+        except Exception as e:
+            # Fallback to print if GUI is not available
+            print(f"[{time.strftime('%H:%M:%S')}] {message}")
     
     def load_model(self):
         """加载预训练模型"""
@@ -263,6 +266,29 @@ class LightTrackGUI:
                 self.model = None
                 return
             
+            # 检查多个可能的模型路径
+            model_paths = [
+                os.path.join(current_dir, 'snapshot', 'checkpoint_e30.pth'),
+                os.path.join(current_dir, 'snapshot', 'LightTrackM', 'LightTrackM.pth'),
+                os.path.join(current_dir, 'snapshot', 'LightTrackM.pth')
+            ]
+            
+            model_path = None
+            for path in model_paths:
+                if os.path.exists(path):
+                    model_path = path
+                    break
+            
+            if not model_path:
+                self.log("警告: 未找到预训练模型文件")
+                self.log("请将模型文件放置到以下位置之一:")
+                for path in model_paths:
+                    self.log(f"  - {path}")
+                # 仍然初始化跟踪器用于演示模式
+                self.tracker = None
+                self.model = None
+                return
+            
             # 模型配置
             info = edict()
             info.arch = 'LightTrackM_Subnet'  # 默认架构
@@ -272,30 +298,51 @@ class LightTrackGUI:
             # 初始化跟踪器
             self.tracker = Lighttrack(info)
             
-            # 检查模型文件
-            model_path = os.path.join(current_dir, 'snapshot', 'LightTrackM.pth')
-            if not os.path.exists(model_path):
-                self.log(f"警告: 模型文件不存在 {model_path}")
-                self.log("请下载预训练模型到 snapshot 目录")
-                self.log("模型下载地址: https://drive.google.com/drive/folders/1HXhdJO3yhQYw3O7nGUOXHu2S20Bs8CfI")
-                return
-            
             # 加载模型
             try:
                 import torch
+                import lib.models.models as models
+                
                 if torch.cuda.is_available():
                     self.log("检测到CUDA，使用GPU加速")
+                    device = 'cuda'
                 else:
                     self.log("未检测到CUDA，使用CPU")
+                    device = 'cpu'
                 
-                # 这里应该加载实际的模型，但由于缺少模型文件，我们创建一个虚拟模型
-                self.model = None  # 实际情况下这里会加载真实模型
+                # 创建模型实例
+                # 对于LightTrackM_Subnet，我们可以不使用path_name参数进行简化加载
+                if hasattr(models, 'LightTrackM_Subnet'):
+                    # 尝试使用简化的模型创建方法
+                    try:
+                        # 尝试不使用path_name参数的方法
+                        model = models.__dict__[info.arch](stride=info.stride)
+                    except TypeError:
+                        # 如果需要path_name，使用默认值
+                        model = models.LightTrackM_Subnet(path_name='NULL', stride=info.stride)
+                else:
+                    model = models.__dict__[info.arch](stride=info.stride)
+                
+                model = model.to(device)
+                model.eval()
+                
+                # 加载预训练权重
+                self.log(f"正在加载模型权重: {model_path}")
+                model = load_pretrain(model, model_path, print_unuse=False)
+                
+                self.model = model
+                self.device = device
                 self.log("模型加载完成")
+                
             except Exception as e:
                 self.log(f"模型加载失败: {e}")
+                self.log("将使用演示模式进行跟踪")
+                self.model = None
                 
         except Exception as e:
             self.log(f"模型初始化失败: {e}")
+            self.tracker = None
+            self.model = None
     
     def select_video(self):
         """选择视频文件"""
@@ -398,29 +445,89 @@ class LightTrackGUI:
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(self.output_path, fourcc, fps, (width, height))
             
-            # 跟踪变量
+            # 读取第一帧进行初始化
+            ret, first_frame = cap.read()
+            if not ret:
+                self.log("错误: 无法读取视频第一帧")
+                return
+            
+            # 初始化跟踪
             frame_idx = 0
             bbox = self.bbox.copy()
+            state = None
             
-            # 模拟跟踪过程（由于缺少真实模型，这里使用简单的跟踪模拟）
+            # 如果有真实模型，进行真实跟踪初始化
+            if self.model is not None and self.tracker is not None:
+                try:
+                    self.log("使用LightTrack真实模型进行跟踪")
+                    
+                    # 转换边界框格式: [x, y, w, h] -> [cx, cy, w, h]
+                    target_pos = [bbox[0] + bbox[2]/2, bbox[1] + bbox[3]/2]
+                    target_sz = [bbox[2], bbox[3]]
+                    
+                    # 初始化跟踪器
+                    state = self.tracker.init(first_frame, target_pos, target_sz, self.model)
+                    self.log("LightTrack跟踪器初始化成功")
+                    
+                except Exception as e:
+                    self.log(f"LightTrack初始化失败，使用演示模式: {e}")
+                    self.model = None
+                    state = None
+            else:
+                self.log("使用演示模式进行跟踪（模拟LightTrack效果）")
+            
+            # 重新开始读取视频
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            
             while self.is_tracking and cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
-                # 绘制跟踪框（这里使用固定框作为演示）
-                x, y, w, h = bbox
-                cv2.rectangle(frame, (int(x), int(y)), (int(x + w), int(y + h)), (0, 255, 0), 2)
-                cv2.putText(frame, f'Frame: {frame_idx + 1}', (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                # 真实跟踪 vs 演示跟踪
+                if state is not None and self.model is not None:
+                    try:
+                        # 使用真实的LightTrack进行跟踪
+                        state = self.tracker.track(state, frame)
+                        
+                        # 获取跟踪结果
+                        target_pos = state['target_pos']
+                        target_sz = state['target_sz']
+                        
+                        # 转换为边界框格式 [cx, cy, w, h] -> [x, y, w, h]
+                        bbox = [
+                            int(target_pos[0] - target_sz[0]/2),
+                            int(target_pos[1] - target_sz[1]/2),
+                            int(target_sz[0]),
+                            int(target_sz[1])
+                        ]
+                        
+                    except Exception as e:
+                        self.log(f"跟踪出错，回退到演示模式: {e}")
+                        self.model = None
+                        state = None
+                        
+                        # 使用演示跟踪
+                        drift_x = np.random.normal(0, 2)
+                        drift_y = np.random.normal(0, 2)
+                        bbox[0] = max(0, min(width - bbox[2], bbox[0] + drift_x))
+                        bbox[1] = max(0, min(height - bbox[3], bbox[1] + drift_y))
+                else:
+                    # 演示跟踪：简单的随机漂移
+                    if frame_idx > 0:
+                        drift_x = np.random.normal(0, 2)
+                        drift_y = np.random.normal(0, 2)
+                        bbox[0] = max(0, min(width - bbox[2], bbox[0] + drift_x))
+                        bbox[1] = max(0, min(height - bbox[3], bbox[1] + drift_y))
                 
-                # 简单的跟踪模拟：边界框可以有小幅移动
-                if frame_idx > 0:
-                    # 模拟目标移动
-                    drift_x = np.random.normal(0, 2)  # 随机漂移
-                    drift_y = np.random.normal(0, 2)
-                    bbox[0] = max(0, min(width - bbox[2], bbox[0] + drift_x))
-                    bbox[1] = max(0, min(height - bbox[3], bbox[1] + drift_y))
+                # 绘制跟踪框
+                x, y, w, h = [int(v) for v in bbox]
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                
+                # 显示帧信息和跟踪状态
+                status_text = "LightTrack" if (self.model is not None) else "Demo Mode"
+                cv2.putText(frame, f'{status_text} - Frame: {frame_idx + 1}', (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 
                 # 写入输出视频
                 out.write(frame)
@@ -429,11 +536,11 @@ class LightTrackGUI:
                 frame_idx += 1
                 if frame_idx % 30 == 0:  # 每30帧更新一次日志
                     progress = (frame_idx / total_frames) * 100
-                    # Use thread-safe logging
-                    self.root.after(0, lambda: self.log(f"跟踪进度: {progress:.1f}% ({frame_idx}/{total_frames})"))
+                    self.root.after(0, lambda p=progress, f=frame_idx, t=total_frames: 
+                                  self.log(f"跟踪进度: {p:.1f}% ({f}/{t})"))
                 
                 # 控制处理速度
-                time.sleep(0.01)  # 避免过快处理
+                time.sleep(0.01)
             
             cap.release()
             out.release()
