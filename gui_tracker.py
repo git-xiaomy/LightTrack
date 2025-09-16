@@ -630,6 +630,10 @@ class LightTrackGUI:
                     target_pos = np.array([bbox[0] + bbox[2]/2, bbox[1] + bbox[3]/2])
                     target_sz = np.array([bbox[2], bbox[3]])
                     
+                    # Store original values for recovery
+                    self.original_target_pos = target_pos.copy()
+                    self.original_target_sz = target_sz.copy()
+                    
                     self.log(f"🎯 目标中心: ({target_pos[0]:.1f}, {target_pos[1]:.1f}), 尺寸: ({target_sz[0]:.1f}, {target_sz[1]:.1f})")
                     
                     # 初始化跟踪器
@@ -755,10 +759,51 @@ class LightTrackGUI:
                             self.log(f"✅ 第{frame_idx}帧真实模型跟踪成功: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
                         
                     except Exception as e:
-                        self.log(f"⚠️  第{frame_idx}帧跟踪失败，跳过此帧继续: {e}")
-                        self.log(f"💡 保持真实模型激活，继续处理后续帧")
-                        # 保持当前bbox位置不变，不切换到演示模式
-                        # model 和 state 保持不变，继续使用真实模型
+                        self.log(f"⚠️  第{frame_idx}帧跟踪失败: {e}")
+                        self.log(f"🔄 正在尝试重新初始化跟踪器...")
+                        
+                        # Try to reinitialize the tracker with current bbox position
+                        try:
+                            if hasattr(self, 'original_target_pos') and hasattr(self, 'original_target_sz'):
+                                # Reset to a valid position if bbox got stuck at boundaries
+                                current_center_x = bbox[0] + bbox[2] / 2
+                                current_center_y = bbox[1] + bbox[3] / 2
+                                
+                                # If bbox is stuck at top-left corner, reset to center of image
+                                if bbox[0] == 0 and bbox[1] == 0:
+                                    self.log("🎯 检测到边界框卡在左上角，重置到图像中心")
+                                    new_center_x = width // 2
+                                    new_center_y = height // 2
+                                    
+                                    # Re-initialize tracker with center position
+                                    target_pos_reset = np.array([new_center_x, new_center_y])
+                                    target_sz_reset = self.original_target_sz.copy()
+                                    
+                                    state = self.tracker.init(frame, target_pos_reset, target_sz_reset, self.model)
+                                    
+                                    # Update bbox to reflect new position
+                                    bbox = [
+                                        int(new_center_x - target_sz_reset[0]/2),
+                                        int(new_center_y - target_sz_reset[1]/2),
+                                        int(target_sz_reset[0]),
+                                        int(target_sz_reset[1])
+                                    ]
+                                    
+                                    # Ensure bbox is within bounds
+                                    bbox[0] = max(0, min(width - bbox[2], bbox[0]))
+                                    bbox[1] = max(0, min(height - bbox[3], bbox[1]))
+                                    
+                                    self.log(f"✅ 跟踪器重新初始化成功，新位置: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
+                                else:
+                                    # Keep current position and continue
+                                    self.log(f"💡 保持当前位置继续跟踪: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
+                            else:
+                                self.log(f"💡 保持真实模型激活，继续处理后续帧")
+                                
+                        except Exception as reset_error:
+                            self.log(f"❌ 跟踪器重新初始化失败: {reset_error}")
+                            self.log(f"💡 保持当前位置继续")
+                            # Keep current bbox position, don't switch to demo mode
                 else:
                     # 演示跟踪：简单的随机漂移
                     if frame_idx % 30 == 0:  # 每30帧提醒一次

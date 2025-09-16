@@ -167,10 +167,27 @@ class Lighttrack(object):
         else:
             target_pos, target_sz, _ = self.update(net, x_crop.cuda(), target_pos, target_sz * scale_z,
                                                    window, scale_z, p, debug=debug)
-        # Fix: Clamp center coordinates considering bounding box size
-        # Center must be at least bbox_size/2 from edges to prevent bbox extending outside image
-        target_pos[0] = max(target_sz[0]/2, min(state['im_w'] - target_sz[0]/2, target_pos[0]))
-        target_pos[1] = max(target_sz[1]/2, min(state['im_h'] - target_sz[1]/2, target_pos[1]))
+        # Check if tracking has failed (coordinates are too close to boundaries or invalid)
+        # Only apply clamping if the result would be clearly invalid
+        min_valid_x = target_sz[0]/2 + 1  # Add buffer to prevent edge clamping
+        min_valid_y = target_sz[1]/2 + 1
+        max_valid_x = state['im_w'] - target_sz[0]/2 - 1
+        max_valid_y = state['im_h'] - target_sz[1]/2 - 1
+        
+        # Only clamp if coordinates are genuinely outside valid range
+        # This prevents healthy tracking from being forced to boundaries
+        if target_pos[0] < min_valid_x or target_pos[0] > max_valid_x:
+            # If tracking failed, raise exception to let GUI handle recovery
+            if target_pos[0] < 10 or target_pos[0] > state['im_w'] - 10:
+                raise ValueError(f"Tracking failed: invalid x coordinate {target_pos[0]}")
+            target_pos[0] = max(min_valid_x, min(max_valid_x, target_pos[0]))
+            
+        if target_pos[1] < min_valid_y or target_pos[1] > max_valid_y:
+            # If tracking failed, raise exception to let GUI handle recovery  
+            if target_pos[1] < 10 or target_pos[1] > state['im_h'] - 10:
+                raise ValueError(f"Tracking failed: invalid y coordinate {target_pos[1]}")
+            target_pos[1] = max(min_valid_y, min(max_valid_y, target_pos[1]))
+            
         target_sz[0] = max(10, min(state['im_w'], target_sz[0]))
         target_sz[1] = max(10, min(state['im_h'], target_sz[1]))
         state['target_pos'] = target_pos
