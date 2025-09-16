@@ -5,7 +5,16 @@ import torch.nn.functional as F
 import numpy as np
 
 from typing import Tuple, Optional, List
-from torch._six import container_abcs
+# Fix for newer PyTorch versions that don't have torch._six
+try:
+    from torch._six import container_abcs
+except ImportError:
+    # For PyTorch 1.8+ and Python 3.3+
+    try:
+        import collections.abc as container_abcs
+    except ImportError:
+        import collections as container_abcs
+
 from itertools import repeat
 
 
