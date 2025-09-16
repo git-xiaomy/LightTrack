@@ -206,6 +206,33 @@ class LightTrackGUI:
         self.setup_ui()
         self.load_model()
     
+    def _safe_extract_scalar(self, value):
+        """安全地从可能的数组或序列中提取标量值"""
+        if hasattr(value, 'item'):  # NumPy scalar/array
+            if value.size == 1:
+                return float(value.item())
+            else:
+                # Handle multi-dimensional arrays by flattening
+                flat = value.flatten()
+                return float(flat[0])
+        elif hasattr(value, '__iter__') and not isinstance(value, str):  # List/tuple/sequence
+            return float(value[0])
+        else:
+            return float(value)
+    
+    def _safe_extract_coordinate(self, pos_array, index):
+        """安全地从位置数组中提取坐标值，处理不同的数组结构"""
+        if hasattr(pos_array, 'shape') and len(pos_array.shape) > 1:
+            # Handle 2D arrays like [[x, y]] -> extract x or y
+            flat = pos_array.flatten()
+            if index < len(flat):
+                return float(flat[index])
+            else:
+                raise IndexError(f"Index {index} out of bounds for flattened array of size {len(flat)}")
+        else:
+            # Handle 1D arrays, lists, etc.
+            return self._safe_extract_scalar(pos_array[index])
+    
     def setup_ui(self):
         """设置用户界面"""
         # 创建主框架
@@ -520,8 +547,8 @@ class LightTrackGUI:
                     self.log("使用LightTrack真实模型进行跟踪")
                     
                     # 转换边界框格式: [x, y, w, h] -> [cx, cy, w, h]
-                    target_pos = [bbox[0] + bbox[2]/2, bbox[1] + bbox[3]/2]
-                    target_sz = [bbox[2], bbox[3]]
+                    target_pos = np.array([bbox[0] + bbox[2]/2, bbox[1] + bbox[3]/2])
+                    target_sz = np.array([bbox[2], bbox[3]])
                     
                     # 初始化跟踪器
                     state = self.tracker.init(first_frame, target_pos, target_sz, self.model)
@@ -553,11 +580,12 @@ class LightTrackGUI:
                         target_sz = state['target_sz']
                         
                         # 转换为边界框格式 [cx, cy, w, h] -> [x, y, w, h]
+                        # 确保target_pos和target_sz的元素都是标量值，处理可能的数组/序列情况
                         bbox = [
-                            int(target_pos[0] - target_sz[0]/2),
-                            int(target_pos[1] - target_sz[1]/2),
-                            int(target_sz[0]),
-                            int(target_sz[1])
+                            int(self._safe_extract_coordinate(target_pos, 0) - self._safe_extract_coordinate(target_sz, 0)/2),
+                            int(self._safe_extract_coordinate(target_pos, 1) - self._safe_extract_coordinate(target_sz, 1)/2),
+                            int(self._safe_extract_coordinate(target_sz, 0)),
+                            int(self._safe_extract_coordinate(target_sz, 1))
                         ]
                         
                     except Exception as e:
@@ -568,15 +596,19 @@ class LightTrackGUI:
                         # 使用演示跟踪
                         drift_x = np.random.normal(0, 2)
                         drift_y = np.random.normal(0, 2)
-                        bbox[0] = max(0, min(width - bbox[2], bbox[0] + drift_x))
-                        bbox[1] = max(0, min(height - bbox[3], bbox[1] + drift_y))
+                        
+                        # 确保bbox元素都是标量值
+                        bbox[0] = max(0, min(width - int(self._safe_extract_scalar(bbox[2])), int(self._safe_extract_scalar(bbox[0])) + drift_x))
+                        bbox[1] = max(0, min(height - int(self._safe_extract_scalar(bbox[3])), int(self._safe_extract_scalar(bbox[1])) + drift_y))
                 else:
                     # 演示跟踪：简单的随机漂移
                     if frame_idx > 0:
                         drift_x = np.random.normal(0, 2)
                         drift_y = np.random.normal(0, 2)
-                        bbox[0] = max(0, min(width - bbox[2], bbox[0] + drift_x))
-                        bbox[1] = max(0, min(height - bbox[3], bbox[1] + drift_y))
+                        
+                        # 确保bbox元素都是标量值
+                        bbox[0] = max(0, min(width - int(self._safe_extract_scalar(bbox[2])), int(self._safe_extract_scalar(bbox[0])) + drift_x))
+                        bbox[1] = max(0, min(height - int(self._safe_extract_scalar(bbox[3])), int(self._safe_extract_scalar(bbox[1])) + drift_y))
                 
                 # 绘制跟踪框
                 x, y, w, h = [int(v) for v in bbox]
