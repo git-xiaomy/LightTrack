@@ -25,9 +25,14 @@ try:
     from lib.utils.utils import load_pretrain, cxy_wh_2_rect, get_axis_aligned_bbox
     from lib.tracker.lighttrack import Lighttrack
     from easydict import EasyDict as edict
+    DEPENDENCIES_AVAILABLE = True
 except ImportError as e:
     print(f"导入错误: {e}")
     print("请确保已正确安装LightTrack依赖")
+    DEPENDENCIES_AVAILABLE = False
+    # Create dummy classes/functions to prevent NameError
+    edict = dict
+    Lighttrack = object
 
 
 class VideoSelector:
@@ -232,16 +237,31 @@ class LightTrackGUI:
     
     def log(self, message):
         """添加日志信息"""
-        timestamp = time.strftime("%H:%M:%S")
-        log_message = f"[{timestamp}] {message}\n"
-        self.log_text.insert(tk.END, log_message)
-        self.log_text.see(tk.END)
-        self.root.update_idletasks()
+        def _log_safe():
+            timestamp = time.strftime("%H:%M:%S")
+            log_message = f"[{timestamp}] {message}\n"
+            self.log_text.insert(tk.END, log_message)
+            self.log_text.see(tk.END)
+            self.root.update_idletasks()
+        
+        # Check if we're in the main thread
+        if threading.current_thread() is threading.main_thread():
+            _log_safe()
+        else:
+            # Schedule log update in the main thread
+            self.root.after(0, _log_safe)
     
     def load_model(self):
         """加载预训练模型"""
         try:
             self.log("正在加载LightTrack模型...")
+            
+            if not DEPENDENCIES_AVAILABLE:
+                self.log("警告: LightTrack依赖未完全安装")
+                self.log("模型将在演示模式下运行（不使用真实的跟踪算法）")
+                self.tracker = None
+                self.model = None
+                return
             
             # 模型配置
             info = edict()
@@ -409,7 +429,8 @@ class LightTrackGUI:
                 frame_idx += 1
                 if frame_idx % 30 == 0:  # 每30帧更新一次日志
                     progress = (frame_idx / total_frames) * 100
-                    self.log(f"跟踪进度: {progress:.1f}% ({frame_idx}/{total_frames})")
+                    # Use thread-safe logging
+                    self.root.after(0, lambda: self.log(f"跟踪进度: {progress:.1f}% ({frame_idx}/{total_frames})"))
                 
                 # 控制处理速度
                 time.sleep(0.01)  # 避免过快处理
