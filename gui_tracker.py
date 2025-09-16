@@ -288,9 +288,7 @@ class LightTrackGUI:
         
         if self.model is not None:
             self.log("✅ 使用了真实LightTrack模型进行跟踪")
-            self.log("   💡 模型保持原始目标模板，提供连续跟踪")
-            self.log("   - 边界限制确保边界框保持在视频范围内")
-            self.log("   - 未进行跟踪器重新初始化，保持目标连续性")
+            self.log("   💡 即使某些帧跟踪失败也保持真实模型激活，跳过失败帧继续")
             self.log("   如果边界框正确跟踪了目标，说明模型工作正常")
         else:
             self.log("❌ 真实模型未能加载或初始化")
@@ -308,7 +306,7 @@ class LightTrackGUI:
         else:
             self.log("✅ 最终位置正常，未出现左上角问题")
         
-        self.log("🚀 总结: GUI跟踪系统运行成功，保持目标跟踪连续性")
+        self.log("🚀 总结: GUI跟踪系统运行成功，使用跳过策略处理失败帧")
         self.log("="*50)
     
     def setup_ui(self):
@@ -748,7 +746,7 @@ class LightTrackGUI:
                             self.log(f"   💡 这表明模型输出存在严重问题")
                             raise ValueError("跟踪结果尺寸无效")
                         
-                        # Monitor tracking quality but don't reinitialize tracker
+                        # Detect tracking loss based on heavy clamping and attempt recovery
                         if was_clamped:
                             self.consecutive_clamps += 1
                             
@@ -757,7 +755,7 @@ class LightTrackGUI:
                             clamp_distance_y = abs(raw_center_y - center_y)
                             max_clamp_distance = max(clamp_distance_x, clamp_distance_y)
                             
-                            # Log tracking loss detection for diagnostic purposes only
+                            # If clamping distance is very large and consistent, try recovery
                             if (self.consecutive_clamps >= 5 and 
                                 max_clamp_distance > min(size_w, size_h) / 4):  # Quarter of smaller dimension
                                 
@@ -766,15 +764,38 @@ class LightTrackGUI:
                                     self.log(f"⚠️  检测到跟踪丢失 (帧 {frame_idx}):")
                                     self.log(f"   原因: 连续{self.consecutive_clamps}帧被大幅度边界限制")
                                     self.log(f"   限制距离: {max_clamp_distance:.1f} 像素")
-                                    self.log(f"💡 继续使用原始模型跟踪，不重新初始化")
-                                    self.log(f"   - 模型将继续寻找原始目标")
-                                    self.log(f"   - 坐标会被限制在视频边界内")
-                                    self.log(f"   - 这确保了跟踪的连续性")
+                                    self.log(f"🔄 尝试跟踪恢复...")
                                 
-                                # Do NOT reinitialize the tracker - let it continue with original template
-                                # Just log the situation and continue with clamped coordinates
-                                self.log(f"🔄 保持原始跟踪模板，继续跟踪...")
-                                
+                                # Try to recover by re-initializing tracker with current frame
+                                # and a reasonable position (not the corner)
+                                try:
+                                    recovery_center_x = width // 2
+                                    recovery_center_y = height // 2
+                                    
+                                    # Make sure recovery position can accommodate the bbox
+                                    recovery_center_x = max(size_w/2, min(width - size_w/2, recovery_center_x))
+                                    recovery_center_y = max(size_h/2, min(height - size_h/2, recovery_center_y))
+                                    
+                                    recovery_pos = np.array([recovery_center_x, recovery_center_y])
+                                    recovery_sz = target_sz.copy()
+                                    
+                                    # Re-initialize tracker
+                                    state = self.tracker.init(frame, recovery_pos, recovery_sz, self.model)
+                                    
+                                    # Update coordinates
+                                    center_x, center_y = recovery_center_x, recovery_center_y
+                                    target_pos = recovery_pos
+                                    
+                                    # Reset tracking state
+                                    self.consecutive_clamps = 0
+                                    self.tracking_lost = False
+                                    self.last_good_pos = (center_x, center_y)
+                                    
+                                    self.log(f"✅ 跟踪器已重新初始化到位置 ({center_x:.1f}, {center_y:.1f})")
+                                    
+                                except Exception as recovery_error:
+                                    self.log(f"❌ 跟踪恢复失败: {recovery_error}")
+                                    # Continue with clamped position
                         else:
                             # Reset tracking loss state if we have good tracking
                             if self.consecutive_clamps > 0:
@@ -820,11 +841,51 @@ class LightTrackGUI:
                             self.log(f"✅ 第{frame_idx}帧真实模型跟踪: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
                         
                     except Exception as e:
-                        self.log(f"⚠️  第{frame_idx}帧跟踪异常: {e}")
-                        self.log(f"💡 保持当前边界框位置，继续下一帧")
-                        self.log(f"   - 跟踪器将保持原始模板")
-                        self.log(f"   - 边界框: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
-                        # Keep current bbox position without reinitializing tracker
+                        self.log(f"⚠️  第{frame_idx}帧跟踪失败: {e}")
+                        self.log(f"🔄 正在尝试重新初始化跟踪器...")
+                        
+                        # Try to reinitialize the tracker with current bbox position
+                        try:
+                            if hasattr(self, 'original_target_pos') and hasattr(self, 'original_target_sz'):
+                                # Reset to a valid position if bbox got stuck at boundaries
+                                current_center_x = bbox[0] + bbox[2] / 2
+                                current_center_y = bbox[1] + bbox[3] / 2
+                                
+                                # If bbox is stuck at top-left corner, reset to center of image
+                                if bbox[0] == 0 and bbox[1] == 0:
+                                    self.log("🎯 检测到边界框卡在左上角，重置到图像中心")
+                                    new_center_x = width // 2
+                                    new_center_y = height // 2
+                                    
+                                    # Re-initialize tracker with center position
+                                    target_pos_reset = np.array([new_center_x, new_center_y])
+                                    target_sz_reset = self.original_target_sz.copy()
+                                    
+                                    state = self.tracker.init(frame, target_pos_reset, target_sz_reset, self.model)
+                                    
+                                    # Update bbox to reflect new position
+                                    bbox = [
+                                        int(new_center_x - target_sz_reset[0]/2),
+                                        int(new_center_y - target_sz_reset[1]/2),
+                                        int(target_sz_reset[0]),
+                                        int(target_sz_reset[1])
+                                    ]
+                                    
+                                    # Ensure bbox is within bounds
+                                    bbox[0] = max(0, min(width - bbox[2], bbox[0]))
+                                    bbox[1] = max(0, min(height - bbox[3], bbox[1]))
+                                    
+                                    self.log(f"✅ 跟踪器重新初始化成功，新位置: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
+                                else:
+                                    # Keep current position and continue
+                                    self.log(f"💡 保持当前位置继续跟踪: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
+                            else:
+                                self.log(f"💡 保持真实模型激活，继续处理后续帧")
+                                
+                        except Exception as reset_error:
+                            self.log(f"❌ 跟踪器重新初始化失败: {reset_error}")
+                            self.log(f"💡 保持当前位置继续")
+                            # Keep current bbox position, don't switch to demo mode
                 else:
                     # 演示跟踪：简单的随机漂移
                     if frame_idx % 30 == 0:  # 每30帧提醒一次
