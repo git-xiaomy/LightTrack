@@ -167,8 +167,10 @@ class Lighttrack(object):
         else:
             target_pos, target_sz, _ = self.update(net, x_crop.cuda(), target_pos, target_sz * scale_z,
                                                    window, scale_z, p, debug=debug)
-        target_pos[0] = max(0, min(state['im_w'], target_pos[0]))
-        target_pos[1] = max(0, min(state['im_h'], target_pos[1]))
+        # Fix: Clamp center coordinates considering bounding box size
+        # Center must be at least bbox_size/2 from edges to prevent bbox extending outside image
+        target_pos[0] = max(target_sz[0]/2, min(state['im_w'] - target_sz[0]/2, target_pos[0]))
+        target_pos[1] = max(target_sz[1]/2, min(state['im_h'] - target_sz[1]/2, target_pos[1]))
         target_sz[0] = max(10, min(state['im_w'], target_sz[0]))
         target_sz[1] = max(10, min(state['im_h'], target_sz[1]))
         state['target_pos'] = target_pos
