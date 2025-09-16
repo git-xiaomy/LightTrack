@@ -46,53 +46,99 @@ class VideoSelector:
             raise ValueError("无法读取视频文件")
         
         self.display_frame = self.first_frame.copy()
-        
+
     def mouse_callback(self, event, x, y, flags, param):
         """鼠标回调函数"""
+        window_name = '选择目标'
+
         if event == cv2.EVENT_LBUTTONDOWN:
             self.selecting = True
             self.start_point = (x, y)
-            
+
         elif event == cv2.EVENT_MOUSEMOVE:
             if self.selecting:
                 # 绘制临时矩形
                 temp_frame = self.first_frame.copy()
                 cv2.rectangle(temp_frame, self.start_point, (x, y), (0, 255, 0), 2)
-                cv2.imshow('选择目标 - 拖拽鼠标框选目标，按ESC取消，按ENTER确认', temp_frame)
-                
+                cv2.imshow(window_name, temp_frame)
+
         elif event == cv2.EVENT_LBUTTONUP:
             if self.selecting:
                 self.selecting = False
                 end_point = (x, y)
-                
+
                 # 计算边界框
                 x1 = min(self.start_point[0], end_point[0])
                 y1 = min(self.start_point[1], end_point[1])
                 x2 = max(self.start_point[0], end_point[0])
                 y2 = max(self.start_point[1], end_point[1])
-                
+
                 if x2 - x1 > 10 and y2 - y1 > 10:  # 最小尺寸检查
                     self.bbox = [x1, y1, x2 - x1, y2 - y1]
                     # 绘制最终矩形
                     cv2.rectangle(self.display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.imshow('选择目标 - 拖拽鼠标框选目标，按ESC取消，按ENTER确认', self.display_frame)
-    
+                    cv2.imshow(window_name, self.display_frame)
+
     def select_target(self):
-        """选择跟踪目标"""
-        cv2.namedWindow('选择目标 - 拖拽鼠标框选目标，按ESC取消，按ENTER确认', cv2.WINDOW_AUTOSIZE)
-        cv2.setMouseCallback('选择目标 - 拖拽鼠标框选目标，按ESC取消，按ENTER确认', self.mouse_callback)
-        cv2.imshow('选择目标 - 拖拽鼠标框选目标，按ESC取消，按ENTER确认', self.first_frame)
-        
-        while True:
-            key = cv2.waitKey(1) & 0xFF
-            if key == 13:  # Enter键
-                if self.bbox is not None:
-                    break
-            elif key == 27:  # ESC键
+        """使用Tkinter选择目标"""
+        # 创建新窗口
+        select_window = tk.Toplevel()
+        select_window.title("选择目标 - 拖拽鼠标框选目标，按ESC取消，按ENTER确认")
+
+        # 转换图像格式用于Tkinter显示
+        img_rgb = cv2.cvtColor(self.first_frame, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img_rgb)
+        img_tk = ImageTk.PhotoImage(img_pil)
+
+        # 创建画布
+        canvas = tk.Canvas(select_window, width=img_pil.width, height=img_pil.height)
+        canvas.pack()
+        canvas.create_image(0, 0, anchor=tk.NW, image=img_tk)
+
+        # 初始化选择变量
+        self.bbox = None
+        start_x, start_y = 0, 0
+        rect_id = None
+
+        def on_button_press(event):
+            nonlocal start_x, start_y, rect_id
+            start_x, start_y = event.x, event.y
+            rect_id = canvas.create_rectangle(start_x, start_y, start_x, start_y, outline='green', width=2)
+
+        def on_motion(event):
+            nonlocal rect_id
+            if rect_id:
+                canvas.coords(rect_id, start_x, start_y, event.x, event.y)
+
+        def on_button_release(event):
+            nonlocal rect_id
+            if rect_id:
+                x1, y1, x2, y2 = canvas.coords(rect_id)
+                self.bbox = [min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1)]
+                canvas.delete(rect_id)
+                rect_id = None
+                canvas.create_rectangle(x1, y1, x2, y2, outline='green', width=2)
+
+        def on_key_press(event):
+            if event.keysym == 'Return' and self.bbox:
+                select_window.quit()
+            elif event.keysym == 'Escape':
                 self.bbox = None
-                break
-        
-        cv2.destroyAllWindows()
+                select_window.quit()
+
+        # 绑定事件
+        canvas.bind("<ButtonPress-1>", on_button_press)
+        canvas.bind("<B1-Motion>", on_motion)
+        canvas.bind("<ButtonRelease-1>", on_button_release)
+        select_window.bind("<Key>", on_key_press)
+
+        # 聚焦到画布
+        canvas.focus_set()
+
+        # 运行窗口
+        select_window.mainloop()
+        select_window.destroy()
+
         return self.bbox
 
 
@@ -123,12 +169,12 @@ class LightTrackGUI:
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # 标题
-        title_label = ttk.Label(main_frame, text="LightTrack 视频目标跟踪系统", 
+        title_label = ttk.Label(main_frame, text="LightTrack",
                                font=('Arial', 16, 'bold'))
         title_label.grid(row=0, column=0, columnspan=2, pady=(0, 20))
         
         # 视频选择区域
-        video_frame = ttk.LabelFrame(main_frame, text="视频选择", padding="10")
+        video_frame = ttk.LabelFrame(main_frame, text="VideoSelect", padding="10")
         video_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         self.video_path_var = tk.StringVar()
@@ -207,7 +253,7 @@ class LightTrackGUI:
             self.tracker = Lighttrack(info)
             
             # 检查模型文件
-            model_path = os.path.join(current_dir, 'snapshot', 'LightTrack_M.pth')
+            model_path = os.path.join(current_dir, 'snapshot', 'LightTrackM.pth')
             if not os.path.exists(model_path):
                 self.log(f"警告: 模型文件不存在 {model_path}")
                 self.log("请下载预训练模型到 snapshot 目录")
