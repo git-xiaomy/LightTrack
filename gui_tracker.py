@@ -25,14 +25,53 @@ try:
     from lib.utils.utils import load_pretrain, cxy_wh_2_rect, get_axis_aligned_bbox
     from lib.tracker.lighttrack import Lighttrack
     from easydict import EasyDict as edict
-    DEPENDENCIES_AVAILABLE = True
+    LIGHTTRACK_DEPENDENCIES_AVAILABLE = True
+    
+    # 尝试加载torch检查
+    try:
+        import torch
+        TORCH_AVAILABLE = True
+        if torch.cuda.is_available():
+            CUDA_AVAILABLE = True
+        else:
+            CUDA_AVAILABLE = False
+    except ImportError:
+        TORCH_AVAILABLE = False
+        CUDA_AVAILABLE = False
+        
 except ImportError as e:
-    print(f"导入错误: {e}")
-    print("请确保已正确安装LightTrack依赖")
-    DEPENDENCIES_AVAILABLE = False
+    print(f"LightTrack核心依赖导入错误: {e}")
+    print("某些高级功能将不可用，但GUI仍可运行在演示模式")
+    LIGHTTRACK_DEPENDENCIES_AVAILABLE = False
+    TORCH_AVAILABLE = False  
+    CUDA_AVAILABLE = False
+    
     # Create dummy classes/functions to prevent NameError
     edict = dict
     Lighttrack = object
+
+# 基础GUI依赖检查
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox
+    GUI_AVAILABLE = True
+except ImportError:
+    print("错误: tkinter未安装，GUI无法启动")
+    print("请安装tkinter: sudo apt-get install python3-tk")
+    GUI_AVAILABLE = False
+    exit(1)
+
+# 其他基础依赖
+try:
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageTk
+    BASIC_DEPENDENCIES_AVAILABLE = True
+except ImportError as e:
+    print(f"基础依赖缺失: {e}")
+    print("请安装: pip install opencv-python numpy pillow")
+    BASIC_DEPENDENCIES_AVAILABLE = False
+    exit(1)
 
 
 class VideoSelector:
@@ -259,9 +298,18 @@ class LightTrackGUI:
         try:
             self.log("正在加载LightTrack模型...")
             
-            if not DEPENDENCIES_AVAILABLE:
-                self.log("警告: LightTrack依赖未完全安装")
-                self.log("模型将在演示模式下运行（不使用真实的跟踪算法）")
+            if not LIGHTTRACK_DEPENDENCIES_AVAILABLE:
+                self.log("警告: LightTrack核心依赖未完全安装")
+                self.log("可用功能: GUI界面、演示跟踪")
+                self.log("不可用功能: 真实LightTrack算法")
+                self.log("模型将在演示模式下运行")
+                self.tracker = None
+                self.model = None
+                return
+            
+            if not TORCH_AVAILABLE:
+                self.log("警告: PyTorch未安装，无法使用真实模型")
+                self.log("将使用演示模式进行跟踪")
                 self.tracker = None
                 self.model = None
                 return
@@ -284,6 +332,7 @@ class LightTrackGUI:
                 self.log("请将模型文件放置到以下位置之一:")
                 for path in model_paths:
                     self.log(f"  - {path}")
+                self.log("将使用演示模式进行跟踪")
                 # 仍然初始化跟踪器用于演示模式
                 self.tracker = None
                 self.model = None
@@ -300,10 +349,7 @@ class LightTrackGUI:
             
             # 加载模型
             try:
-                import torch
-                import lib.models.models as models
-                
-                if torch.cuda.is_available():
+                if CUDA_AVAILABLE:
                     self.log("检测到CUDA，使用GPU加速")
                     device = 'cuda'
                 else:
@@ -311,17 +357,23 @@ class LightTrackGUI:
                     device = 'cpu'
                 
                 # 创建模型实例
-                # 对于LightTrackM_Subnet，我们可以不使用path_name参数进行简化加载
-                if hasattr(models, 'LightTrackM_Subnet'):
-                    # 尝试使用简化的模型创建方法
+                # 对于LightTrackM_Subnet，需要提供path_name参数
+                if info.arch == 'LightTrackM_Subnet':
+                    # LightTrackM_Subnet需要path_name参数，使用默认值
+                    model = models.LightTrackM_Subnet(path_name='back_04502+cls_111111111+reg_111111111', stride=info.stride)
+                elif hasattr(models, info.arch):
+                    # 其他模型可能不需要path_name参数
                     try:
-                        # 尝试不使用path_name参数的方法
                         model = models.__dict__[info.arch](stride=info.stride)
-                    except TypeError:
-                        # 如果需要path_name，使用默认值
-                        model = models.LightTrackM_Subnet(path_name='NULL', stride=info.stride)
+                    except TypeError as e:
+                        # 如果需要额外参数，尝试提供默认值
+                        self.log(f"模型构造需要额外参数: {e}")
+                        if 'path_name' in str(e):
+                            model = models.__dict__[info.arch](path_name='back_04502+cls_111111111+reg_111111111', stride=info.stride)
+                        else:
+                            raise
                 else:
-                    model = models.__dict__[info.arch](stride=info.stride)
+                    raise ValueError(f"未知的模型架构: {info.arch}")
                 
                 model = model.to(device)
                 model.eval()
@@ -341,6 +393,7 @@ class LightTrackGUI:
                 
         except Exception as e:
             self.log(f"模型初始化失败: {e}")
+            self.log("将使用演示模式进行跟踪")
             self.tracker = None
             self.model = None
     
@@ -532,12 +585,12 @@ class LightTrackGUI:
                 # 写入输出视频
                 out.write(frame)
                 
-                # 更新进度
+                # 更新进度 - 确保线程安全
                 frame_idx += 1
                 if frame_idx % 30 == 0:  # 每30帧更新一次日志
                     progress = (frame_idx / total_frames) * 100
-                    self.root.after(0, lambda p=progress, f=frame_idx, t=total_frames: 
-                                  self.log(f"跟踪进度: {p:.1f}% ({f}/{t})"))
+                    # 使用线程安全的方式更新UI
+                    self.log(f"跟踪进度: {progress:.1f}% ({frame_idx}/{total_frames})")
                 
                 # 控制处理速度
                 time.sleep(0.01)
@@ -547,13 +600,21 @@ class LightTrackGUI:
             
             if self.is_tracking:
                 self.log(f"跟踪完成! 结果已保存至: {self.output_path}")
-                self.root.after(0, self._tracking_finished)
+                # 使用线程安全的方式更新UI
+                try:
+                    self.root.after(0, self._tracking_finished)
+                except Exception as e:
+                    self.log(f"UI更新失败: {e}")
             else:
                 self.log("跟踪被用户中止")
                 
         except Exception as e:
             self.log(f"跟踪过程出错: {e}")
-            self.root.after(0, self._tracking_error, str(e))
+            # 使用线程安全的方式显示错误
+            try:
+                self.root.after(0, lambda: self._tracking_error(str(e)))
+            except Exception as ui_error:
+                self.log(f"UI错误处理失败: {ui_error}")
     
     def _tracking_finished(self):
         """跟踪完成后的UI更新"""
