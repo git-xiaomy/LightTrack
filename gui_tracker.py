@@ -695,12 +695,12 @@ class LightTrackGUI:
                             self.log(f"🔍 第{frame_idx}帧跟踪结果: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
                         
                         # 验证跟踪结果是否合理
-                        # 检查中心坐标是否能产生合理的边界框（不会被裁剪到左上角）
-                        # 使用稍微更严格的边界以避免边界情况
-                        min_center_x = size_w / 2 + 1  # 留出1像素的缓冲区
-                        min_center_y = size_h / 2 + 1  # 留出1像素的缓冲区
-                        max_center_x = width - size_w / 2 - 1   # 留出1像素的缓冲区
-                        max_center_y = height - size_h / 2 - 1  # 留出1像素的缓冲区
+                        # 检查中心坐标是否能产生合理的边界框（不会被裁剪）
+                        # 使用精确的边界计算，允许边缘跟踪但防止裁剪
+                        min_center_x = size_w / 2  # 确保left边界 >= 0
+                        min_center_y = size_h / 2  # 确保top边界 >= 0  
+                        max_center_x = width - size_w / 2   # 确保right边界 <= width
+                        max_center_y = height - size_h / 2  # 确保bottom边界 <= height
                         
                         if (center_x < min_center_x or center_y < min_center_y or 
                             size_w <= 0 or size_h <= 0 or
@@ -714,17 +714,19 @@ class LightTrackGUI:
                             # 详细解释为什么无效
                             reasons = []
                             if center_x < min_center_x:
-                                bbox_left = int(center_x - size_w/2)
-                                reasons.append(f"中心X({center_x:.1f}) < 最小值({min_center_x:.1f})，会导致左边界={bbox_left} < 0")
+                                bbox_left = center_x - size_w/2
+                                reasons.append(f"中心X({center_x:.1f}) < 最小值({min_center_x:.1f})，会导致左边界={bbox_left:.1f} < 0")
                             if center_y < min_center_y:
-                                bbox_top = int(center_y - size_h/2)
-                                reasons.append(f"中心Y({center_y:.1f}) < 最小值({min_center_y:.1f})，会导致上边界={bbox_top} < 0")
+                                bbox_top = center_y - size_h/2
+                                reasons.append(f"中心Y({center_y:.1f}) < 最小值({min_center_y:.1f})，会导致上边界={bbox_top:.1f} < 0")
                             if size_w <= 0 or size_h <= 0:
                                 reasons.append(f"尺寸无效: width={size_w}, height={size_h}")
                             if center_x > max_center_x:
-                                reasons.append(f"中心X({center_x:.1f}) > 最大值({max_center_x:.1f})，超出视频右边界")
+                                bbox_right = center_x + size_w/2
+                                reasons.append(f"中心X({center_x:.1f}) > 最大值({max_center_x:.1f})，会导致右边界={bbox_right:.1f} > {width}")
                             if center_y > max_center_y:
-                                reasons.append(f"中心Y({center_y:.1f}) > 最大值({max_center_y:.1f})，超出视频下边界")
+                                bbox_bottom = center_y + size_h/2
+                                reasons.append(f"中心Y({center_y:.1f}) > 最大值({max_center_y:.1f})，会导致下边界={bbox_bottom:.1f} > {height}")
                             
                             for i, reason in enumerate(reasons, 1):
                                 self.log(f"   {i}. {reason}")
@@ -734,6 +736,7 @@ class LightTrackGUI:
                             self.log(f"      2. 目标被严重遮挡")
                             self.log(f"      3. 目标外观变化过大")
                             self.log(f"      4. 模型对当前场景适应性差")
+                            self.log(f"   💡 注意: 验证已优化支持边缘跟踪，只拒绝会导致边界框超出视频范围的坐标")
                             self.log(f"   💡 系统将切换到演示模式，这是正常的错误恢复行为")
                             raise ValueError("跟踪结果无效")
                         

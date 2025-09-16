@@ -24,10 +24,10 @@ def test_validation_logic():
     center_x, center_y = 77.0, 175.3
     size_w, size_h = 337.0, 444.0
     
-    min_center_x = size_w / 2 + 1  # 168.5 + 1 = 169.5
-    min_center_y = size_h / 2 + 1  # 222 + 1 = 223.0
-    max_center_x = width - size_w / 2 - 1   # 720 - 168.5 - 1 = 550.5
-    max_center_y = height - size_h / 2 - 1  # 1280 - 222 - 1 = 1057.0
+    min_center_x = size_w / 2  # 168.5 精确边界
+    min_center_y = size_h / 2  # 222.0 精确边界  
+    max_center_x = width - size_w / 2   # 720 - 168.5 = 551.5
+    max_center_y = height - size_h / 2  # 1280 - 222 = 1058.0
     
     is_invalid = (center_x < min_center_x or center_y < min_center_y or 
                   size_w <= 0 or size_h <= 0 or
@@ -61,13 +61,16 @@ def test_validation_logic():
     print(f"   Result: {'❌ Invalid' if is_invalid else '✅ VALID (correctly accepted)'}")
     
     # Test case 3: Edge cases that were problematic before fix
-    print("\n3. Testing edge cases that caused problems before fix:")
+    print("\n3. Testing edge cases and edge tracking scenarios:")
     edge_cases = [
         (0.0, 0.0, "Zero coordinates"),
         (1.0, 1.0, "Small positive coordinates"), 
         (30.0, 30.0, "Borderline coordinates"),
-        (169.4, 222.9, "Just below threshold"),
-        (169.6, 223.1, "Just above threshold")
+        (168.4, 221.9, "Just below threshold"),
+        (168.6, 222.1, "Just above threshold"),
+        (168.5, 222.0, "Exact edge - should be valid"),  # NEW: edge tracking test
+        (200.0, 250.0, "Left-top edge tracking"),         # NEW: edge tracking test
+        (520.0, 400.0, "Right edge tracking")             # NEW: edge tracking test
     ]
     
     for cx, cy, description in edge_cases:
