@@ -680,9 +680,14 @@ class LightTrackGUI:
                         # 使用真实的LightTrack进行跟踪
                         state = self.tracker.track(state, frame)
                         
-                        # 获取跟踪结果
+                        # 获取跟踪结果和诊断信息
                         target_pos = state['target_pos']
                         target_sz = state['target_sz']
+                        
+                        # 获取原始跟踪结果（未经边界限制）
+                        raw_pos = state.get('raw_target_pos', target_pos)
+                        confidence = state.get('confidence', 0.0)
+                        was_clamped = state.get('was_clamped', False)
                         
                         # 提取坐标值
                         center_x = self._safe_extract_coordinate(target_pos, 0)
@@ -690,55 +695,69 @@ class LightTrackGUI:
                         size_w = self._safe_extract_coordinate(target_sz, 0)
                         size_h = self._safe_extract_coordinate(target_sz, 1)
                         
-                        # 详细跟踪结果日志 (每30帧记录一次)
+                        # 原始坐标（模型直接输出）
+                        raw_center_x = self._safe_extract_coordinate(raw_pos, 0)
+                        raw_center_y = self._safe_extract_coordinate(raw_pos, 1)
+                        
+                        # 详细跟踪结果日志 (每30帧记录一次) - 添加模型诊断信息
                         if frame_idx % 30 == 0:
-                            self.log(f"🔍 第{frame_idx}帧跟踪结果: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
+                            self.log(f"🔍 第{frame_idx}帧跟踪结果:")
+                            self.log(f"   📊 模型置信度: {confidence:.3f}")
+                            self.log(f"   🎯 模型原始输出: center=({raw_center_x:.1f}, {raw_center_y:.1f})")
+                            self.log(f"   📍 最终坐标: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
+                            if was_clamped:
+                                self.log(f"   ⚠️  坐标已被边界限制修正")
+                                drift_x = raw_center_x - center_x
+                                drift_y = raw_center_y - center_y
+                                self.log(f"   📏 修正偏移: dx={drift_x:.1f}, dy={drift_y:.1f}")
+                            else:
+                                self.log(f"   ✅ 坐标无需修正 - 模型跟踪正常")
+                                
+                        # 检查跟踪质量
+                        is_good_tracking = confidence > 0.5 and not was_clamped
+                        is_boundary_tracking = was_clamped and confidence > 0.3  
+                        is_poor_tracking = confidence < 0.3
                         
-                        # 验证跟踪结果是否合理
-                        # 检查中心坐标是否能产生合理的边界框（不会被裁剪）
-                        # 使用精确的边界计算，允许边缘跟踪但防止裁剪
-                        min_center_x = size_w / 2  # 确保left边界 >= 0
-                        min_center_y = size_h / 2  # 确保top边界 >= 0  
-                        max_center_x = width - size_w / 2   # 确保right边界 <= width
-                        max_center_y = height - size_h / 2  # 确保bottom边界 <= height
+                        # 分析跟踪质量并提供用户友好的反馈
+                        if frame_idx % 30 == 0:  # 每30帧分析一次跟踪质量
+                            if is_good_tracking:
+                                self.log(f"   ✅ 跟踪质量: 优秀 (置信度: {confidence:.3f})")
+                            elif is_boundary_tracking:
+                                self.log(f"   ⚠️  跟踪质量: 边界跟踪 (置信度: {confidence:.3f})")
+                                self.log(f"      💡 目标可能接近视频边缘或被部分遮挡")
+                            elif is_poor_tracking:
+                                self.log(f"   ❌ 跟踪质量: 较差 (置信度: {confidence:.3f})")  
+                                self.log(f"      💡 可能原因: 目标被严重遮挡、形变过大或光照变化")
+                                
+                        # 只有在真正无效的情况下才拒绝结果（保持原有逻辑但更宽松）
+                        truly_invalid = (
+                            size_w <= 0 or size_h <= 0 or  # 尺寸无效
+                            size_w > width or size_h > height  # 尺寸超出视频
+                        )
                         
-                        if (center_x < min_center_x or center_y < min_center_y or 
-                            size_w <= 0 or size_h <= 0 or
-                            center_x > max_center_x or center_y > max_center_y or
-                            size_w > width or size_h > height):
-                            
-                            self.log(f"❌ 第{frame_idx}帧检测到无效的跟踪结果:")
-                            self.log(f"   返回坐标: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
-                            self.log(f"   有效范围: center_x=[{min_center_x:.1f}, {max_center_x:.1f}], center_y=[{min_center_y:.1f}, {max_center_y:.1f}]")
-                            
-                            # 详细解释为什么无效
-                            reasons = []
-                            if center_x < min_center_x:
-                                bbox_left = center_x - size_w/2
-                                reasons.append(f"中心X({center_x:.1f}) < 最小值({min_center_x:.1f})，会导致左边界={bbox_left:.1f} < 0")
-                            if center_y < min_center_y:
-                                bbox_top = center_y - size_h/2
-                                reasons.append(f"中心Y({center_y:.1f}) < 最小值({min_center_y:.1f})，会导致上边界={bbox_top:.1f} < 0")
-                            if size_w <= 0 or size_h <= 0:
-                                reasons.append(f"尺寸无效: width={size_w}, height={size_h}")
-                            if center_x > max_center_x:
-                                bbox_right = center_x + size_w/2
-                                reasons.append(f"中心X({center_x:.1f}) > 最大值({max_center_x:.1f})，会导致右边界={bbox_right:.1f} > {width}")
-                            if center_y > max_center_y:
-                                bbox_bottom = center_y + size_h/2
-                                reasons.append(f"中心Y({center_y:.1f}) > 最大值({max_center_y:.1f})，会导致下边界={bbox_bottom:.1f} > {height}")
-                            
-                            for i, reason in enumerate(reasons, 1):
-                                self.log(f"   {i}. {reason}")
-                            
-                            self.log(f"   📋 这表明真实模型跟踪失败，可能原因:")
-                            self.log(f"      1. 目标丢失或移出视野")  
-                            self.log(f"      2. 目标被严重遮挡")
-                            self.log(f"      3. 目标外观变化过大")
-                            self.log(f"      4. 模型对当前场景适应性差")
-                            self.log(f"   💡 注意: 验证已优化支持边缘跟踪，只拒绝会导致边界框超出视频范围的坐标")
-                            self.log(f"   🔄 系统将跳过此帧，保持真实模型继续处理后续帧")
-                            raise ValueError("跟踪结果无效")
+                        if truly_invalid:
+                            self.log(f"❌ 第{frame_idx}帧检测到真正无效的跟踪结果:")
+                            self.log(f"   问题: 尺寸无效 size=({size_w:.1f}, {size_h:.1f}), 视频尺寸=({width}, {height})")
+                            self.log(f"   💡 这表明模型输出存在严重问题")
+                            raise ValueError("跟踪结果尺寸无效")
+                        
+                        # 对于边界坐标，提供信息但不拒绝（这是正常的边界跟踪）
+                        min_center_x = size_w / 2
+                        min_center_y = size_h / 2  
+                        max_center_x = width - size_w / 2
+                        max_center_y = height - size_h / 2
+                        
+                        is_at_boundary = (
+                            center_x <= min_center_x or center_y <= min_center_y or
+                            center_x >= max_center_x or center_y >= max_center_y
+                        )
+                        
+                        if is_at_boundary and frame_idx % 30 == 0:
+                            self.log(f"   🔍 目标位于视频边界 - 这是正常的边界跟踪行为")
+                            if center_x <= min_center_x or center_y <= min_center_y:
+                                self.log(f"      📍 目标接近左上边界")
+                            if center_x >= max_center_x or center_y >= max_center_y:
+                                self.log(f"      📍 目标接近右下边界")
                         
                         # 转换为边界框格式 [cx, cy, w, h] -> [x, y, w, h]
                         new_bbox = [
@@ -748,7 +767,7 @@ class LightTrackGUI:
                             int(size_h)
                         ]
                         
-                        # 确保边界框在视频范围内
+                        # 确保边界框在视频范围内（这是正常的边界处理）
                         new_bbox[0] = max(0, min(width - new_bbox[2], new_bbox[0]))
                         new_bbox[1] = max(0, min(height - new_bbox[3], new_bbox[1]))
                         
@@ -756,7 +775,7 @@ class LightTrackGUI:
                         
                         # 成功跟踪的反馈 (每30帧记录一次)
                         if frame_idx % 30 == 0:
-                            self.log(f"✅ 第{frame_idx}帧真实模型跟踪成功: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
+                            self.log(f"✅ 第{frame_idx}帧真实模型跟踪: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
                         
                     except Exception as e:
                         self.log(f"⚠️  第{frame_idx}帧跟踪失败: {e}")
