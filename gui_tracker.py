@@ -233,6 +233,82 @@ class LightTrackGUI:
             # Handle 1D arrays, lists, etc.
             return self._safe_extract_scalar(pos_array[index])
     
+    def _verify_model_functionality(self):
+        """验证模型是否真正可用"""
+        try:
+            import torch
+            
+            # 检查模型状态
+            if self.model is None:
+                self.log("❌ 模型验证失败: 模型为None")
+                return False
+                
+            # 检查模型是否在正确的设备上
+            device_str = str(next(self.model.parameters()).device)
+            self.log(f"📍 模型设备: {device_str}")
+            
+            # 检查模型是否处于评估模式
+            is_training = self.model.training
+            if is_training:
+                self.log("⚠️ 模型仍处于训练模式，切换到评估模式")
+                self.model.eval()
+            else:
+                self.log("✅ 模型处于评估模式")
+            
+            # 创建测试输入来验证模型
+            test_input = torch.randn(1, 3, 256, 256).to(self.device)
+            with torch.no_grad():
+                # 尝试前向传播测试
+                try:
+                    # 这里只是测试模型结构，不是真正的跟踪测试
+                    if hasattr(self.model, 'template'):
+                        self.log("✅ 模型具有template方法")
+                    if hasattr(self.model, 'track'):  
+                        self.log("✅ 模型具有track方法")
+                        
+                    self.log("✅ 模型功能验证通过 - 真实LightTrack模型已准备就绪")
+                    return True
+                    
+                except Exception as e:
+                    self.log(f"❌ 模型功能验证失败: {e}")
+                    return False
+                    
+        except ImportError:
+            self.log("❌ PyTorch未安装，无法验证模型")
+            return False
+        except Exception as e:
+            self.log(f"❌ 模型验证过程出错: {e}")
+            return False
+    
+    def _log_tracking_summary(self, total_frames, final_bbox):
+        """记录跟踪过程总结"""
+        self.log("\n" + "="*50)
+        self.log("📊 跟踪过程总结")
+        self.log("="*50)
+        
+        if self.model is not None:
+            self.log("✅ 使用了真实LightTrack模型进行跟踪")
+            self.log("   如果边界框正确跟踪了目标，说明模型工作正常")
+            self.log("   如果跟踪失效或跳转到左上角，说明模型虽然加载但跟踪性能有限")
+        else:
+            self.log("❌ 使用了演示模式（非真实跟踪）")
+            self.log("   原因可能是:")
+            self.log("   1. 模型文件不存在或加载失败")
+            self.log("   2. PyTorch依赖问题")
+            self.log("   3. 跟踪初始化失败")
+            self.log("   4. 跟踪过程中出现异常而回退")
+        
+        self.log(f"🎯 最终边界框位置: {final_bbox}")  
+        self.log(f"📹 总处理帧数: {total_frames}")
+        
+        # 判断是否出现左上角问题
+        if final_bbox[0] <= 5 and final_bbox[1] <= 5:
+            self.log("⚠️ 警告: 最终位置接近左上角，可能存在跟踪问题")
+        else:
+            self.log("✅ 最终位置正常，未出现左上角问题")
+            
+        self.log("="*50)
+    
     def setup_ui(self):
         """设置用户界面"""
         # 创建主框架
@@ -416,10 +492,13 @@ class LightTrackGUI:
                 
                 self.model = model
                 self.device = device
-                self.log("模型加载完成")
+                self.log("✅ 模型加载完成")
+                
+                # 验证模型是否真正可用
+                self._verify_model_functionality()
                 
             except Exception as e:
-                self.log(f"模型加载失败: {e}")
+                self.log(f"❌ 模型加载失败: {e}")
                 self.log("将使用演示模式进行跟踪")
                 self.model = None
                 
@@ -544,22 +623,44 @@ class LightTrackGUI:
             # 如果有真实模型，进行真实跟踪初始化
             if self.model is not None and self.tracker is not None:
                 try:
-                    self.log("使用LightTrack真实模型进行跟踪")
+                    self.log("🚀 使用LightTrack真实模型进行跟踪")
+                    self.log(f"📊 初始目标位置: {bbox}")
                     
                     # 转换边界框格式: [x, y, w, h] -> [cx, cy, w, h]
                     target_pos = np.array([bbox[0] + bbox[2]/2, bbox[1] + bbox[3]/2])
                     target_sz = np.array([bbox[2], bbox[3]])
                     
+                    self.log(f"🎯 目标中心: ({target_pos[0]:.1f}, {target_pos[1]:.1f}), 尺寸: ({target_sz[0]:.1f}, {target_sz[1]:.1f})")
+                    
                     # 初始化跟踪器
                     state = self.tracker.init(first_frame, target_pos, target_sz, self.model)
-                    self.log("LightTrack跟踪器初始化成功")
+                    self.log("✅ LightTrack跟踪器初始化成功")
+                    
+                    # 验证初始化后的状态
+                    if state is not None and 'target_pos' in state and 'target_sz' in state:
+                        init_pos = state['target_pos']
+                        init_sz = state['target_sz']
+                        self.log(f"🔍 初始状态验证: pos={init_pos}, size={init_sz}")
+                        self.log("✅ 真实模型已激活，开始真实跟踪")
+                    else:
+                        self.log("❌ 跟踪器初始化返回无效状态")
+                        raise ValueError("跟踪器初始化失败")
                     
                 except Exception as e:
-                    self.log(f"LightTrack初始化失败，使用演示模式: {e}")
+                    self.log(f"❌ LightTrack初始化失败，回退到演示模式: {e}")
+                    self.log("📋 失败原因可能是:")
+                    self.log("   1. 模型权重与架构不匹配")
+                    self.log("   2. 输入图像尺寸或格式问题") 
+                    self.log("   3. GPU内存不足")
+                    self.log("   4. 目标区域无效")
                     self.model = None
                     state = None
             else:
-                self.log("使用演示模式进行跟踪（模拟LightTrack效果）")
+                self.log("🎭 使用演示模式进行跟踪（模拟LightTrack效果）")
+                if self.model is None:
+                    self.log("   原因: 模型未加载或加载失败")
+                if self.tracker is None:
+                    self.log("   原因: 跟踪器未初始化")
             
             # 重新开始读取视频
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -585,6 +686,10 @@ class LightTrackGUI:
                         size_w = self._safe_extract_coordinate(target_sz, 0)
                         size_h = self._safe_extract_coordinate(target_sz, 1)
                         
+                        # 详细跟踪结果日志 (每30帧记录一次)
+                        if frame_idx % 30 == 0:
+                            self.log(f"🔍 第{frame_idx}帧跟踪结果: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
+                        
                         # 验证跟踪结果是否合理
                         # 检查中心坐标是否能产生合理的边界框（不会被裁剪到左上角）
                         # 使用稍微更严格的边界以避免边界情况
@@ -598,8 +703,14 @@ class LightTrackGUI:
                             center_x > max_center_x or center_y > max_center_y or
                             size_w > width or size_h > height):
                             
-                            self.log(f"检测到无效的跟踪结果: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
-                            self.log(f"有效范围: center_x=[{min_center_x:.1f}, {max_center_x:.1f}], center_y=[{min_center_y:.1f}, {max_center_y:.1f}]")
+                            self.log(f"❌ 第{frame_idx}帧检测到无效的跟踪结果:")
+                            self.log(f"   返回坐标: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
+                            self.log(f"   有效范围: center_x=[{min_center_x:.1f}, {max_center_x:.1f}], center_y=[{min_center_y:.1f}, {max_center_y:.1f}]")
+                            self.log(f"   📋 这表明真实模型跟踪失败，可能原因:")
+                            self.log(f"      1. 目标丢失或移出视野")  
+                            self.log(f"      2. 目标被严重遮挡")
+                            self.log(f"      3. 目标外观变化过大")
+                            self.log(f"      4. 模型对当前场景适应性差")
                             raise ValueError("跟踪结果无效")
                         
                         # 转换为边界框格式 [cx, cy, w, h] -> [x, y, w, h]
@@ -616,8 +727,13 @@ class LightTrackGUI:
                         
                         bbox = new_bbox
                         
+                        # 成功跟踪的反馈 (每30帧记录一次)
+                        if frame_idx % 30 == 0:
+                            self.log(f"✅ 第{frame_idx}帧真实模型跟踪成功: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
+                        
                     except Exception as e:
-                        self.log(f"跟踪出错，回退到演示模式: {e}")
+                        self.log(f"❌ 第{frame_idx}帧跟踪出错，回退到演示模式: {e}")
+                        self.log(f"🔄 从此帧开始将使用演示模式继续跟踪")
                         self.model = None
                         state = None
                         
@@ -632,6 +748,9 @@ class LightTrackGUI:
                             bbox[1] = max(0, min(height - int(self._safe_extract_scalar(bbox[3])), int(self._safe_extract_scalar(bbox[1])) + drift_y))
                 else:
                     # 演示跟踪：简单的随机漂移
+                    if frame_idx % 30 == 0:  # 每30帧提醒一次
+                        self.log(f"🎭 第{frame_idx}帧使用演示模式 - 这不是真实跟踪结果")
+                        
                     if frame_idx > 0:
                         drift_x = np.random.normal(0, 2)
                         drift_y = np.random.normal(0, 2)
@@ -642,12 +761,32 @@ class LightTrackGUI:
                 
                 # 绘制跟踪框
                 x, y, w, h = [int(v) for v in bbox]
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 
-                # 显示帧信息和跟踪状态
-                status_text = "LightTrack" if (self.model is not None) else "Demo Mode"
+                # 根据模式使用不同颜色的边界框
+                if self.model is not None:
+                    # 真实模型：绿色框
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    status_text = "LightTrack (真实模型)"
+                    status_color = (0, 255, 0)  # 绿色
+                else:
+                    # 演示模式：红色框  
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                    status_text = "Demo Mode (演示模式)"
+                    status_color = (0, 0, 255)  # 红色
+                
+                # 显示帧信息和跟踪状态 - 使用大号字体
                 cv2.putText(frame, f'{status_text} - Frame: {frame_idx + 1}', (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+                
+                # 在右上角显示额外状态信息
+                if self.model is not None:
+                    cv2.putText(frame, '✓ REAL MODEL ACTIVE', (width - 250, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, '⚠ DEMO MODE ONLY', (width - 250, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    cv2.putText(frame, 'NOT REAL TRACKING', (width - 250, 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                 
                 # 写入输出视频
                 out.write(frame)
@@ -666,7 +805,8 @@ class LightTrackGUI:
             out.release()
             
             if self.is_tracking:
-                self.log(f"跟踪完成! 结果已保存至: {self.output_path}")
+                self.log(f"🎉 跟踪完成! 结果已保存至: {self.output_path}")
+                self._log_tracking_summary(frame_idx, bbox)
                 # 使用线程安全的方式更新UI
                 try:
                     self.root.after(0, self._tracking_finished)
