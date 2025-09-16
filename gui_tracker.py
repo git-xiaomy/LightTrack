@@ -586,13 +586,20 @@ class LightTrackGUI:
                         size_h = self._safe_extract_coordinate(target_sz, 1)
                         
                         # 验证跟踪结果是否合理
-                        # 如果中心坐标为0或负数，或者尺寸异常，则认为跟踪失败
-                        if (center_x <= 0 or center_y <= 0 or 
+                        # 检查中心坐标是否能产生合理的边界框（不会被裁剪到左上角）
+                        # 使用稍微更严格的边界以避免边界情况
+                        min_center_x = size_w / 2 + 1  # 留出1像素的缓冲区
+                        min_center_y = size_h / 2 + 1  # 留出1像素的缓冲区
+                        max_center_x = width - size_w / 2 - 1   # 留出1像素的缓冲区
+                        max_center_y = height - size_h / 2 - 1  # 留出1像素的缓冲区
+                        
+                        if (center_x < min_center_x or center_y < min_center_y or 
                             size_w <= 0 or size_h <= 0 or
-                            center_x >= width or center_y >= height or
+                            center_x > max_center_x or center_y > max_center_y or
                             size_w > width or size_h > height):
                             
                             self.log(f"检测到无效的跟踪结果: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
+                            self.log(f"有效范围: center_x=[{min_center_x:.1f}, {max_center_x:.1f}], center_y=[{min_center_y:.1f}, {max_center_y:.1f}]")
                             raise ValueError("跟踪结果无效")
                         
                         # 转换为边界框格式 [cx, cy, w, h] -> [x, y, w, h]
