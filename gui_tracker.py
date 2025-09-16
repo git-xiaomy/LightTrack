@@ -634,6 +634,11 @@ class LightTrackGUI:
                     self.original_target_pos = target_pos.copy()
                     self.original_target_sz = target_sz.copy()
                     
+                    # Initialize tracking loss detection
+                    self.consecutive_clamps = 0
+                    self.last_good_pos = None
+                    self.tracking_lost = False
+                    
                     self.log(f"🎯 目标中心: ({target_pos[0]:.1f}, {target_pos[1]:.1f}), 尺寸: ({target_sz[0]:.1f}, {target_sz[1]:.1f})")
                     
                     # 初始化跟踪器
@@ -740,6 +745,64 @@ class LightTrackGUI:
                             self.log(f"   问题: 尺寸无效 size=({size_w:.1f}, {size_h:.1f}), 视频尺寸=({width}, {height})")
                             self.log(f"   💡 这表明模型输出存在严重问题")
                             raise ValueError("跟踪结果尺寸无效")
+                        
+                        # Detect tracking loss based on heavy clamping and attempt recovery
+                        if was_clamped:
+                            self.consecutive_clamps += 1
+                            
+                            # Calculate how far the raw output is from the clamped output
+                            clamp_distance_x = abs(raw_center_x - center_x)
+                            clamp_distance_y = abs(raw_center_y - center_y)
+                            max_clamp_distance = max(clamp_distance_x, clamp_distance_y)
+                            
+                            # If clamping distance is very large and consistent, try recovery
+                            if (self.consecutive_clamps >= 5 and 
+                                max_clamp_distance > min(size_w, size_h) / 4):  # Quarter of smaller dimension
+                                
+                                if not self.tracking_lost:
+                                    self.tracking_lost = True
+                                    self.log(f"⚠️  检测到跟踪丢失 (帧 {frame_idx}):")
+                                    self.log(f"   原因: 连续{self.consecutive_clamps}帧被大幅度边界限制")
+                                    self.log(f"   限制距离: {max_clamp_distance:.1f} 像素")
+                                    self.log(f"🔄 尝试跟踪恢复...")
+                                
+                                # Try to recover by re-initializing tracker with current frame
+                                # and a reasonable position (not the corner)
+                                try:
+                                    recovery_center_x = width // 2
+                                    recovery_center_y = height // 2
+                                    
+                                    # Make sure recovery position can accommodate the bbox
+                                    recovery_center_x = max(size_w/2, min(width - size_w/2, recovery_center_x))
+                                    recovery_center_y = max(size_h/2, min(height - size_h/2, recovery_center_y))
+                                    
+                                    recovery_pos = np.array([recovery_center_x, recovery_center_y])
+                                    recovery_sz = target_sz.copy()
+                                    
+                                    # Re-initialize tracker
+                                    state = self.tracker.init(frame, recovery_pos, recovery_sz, self.model)
+                                    
+                                    # Update coordinates
+                                    center_x, center_y = recovery_center_x, recovery_center_y
+                                    target_pos = recovery_pos
+                                    
+                                    # Reset tracking state
+                                    self.consecutive_clamps = 0
+                                    self.tracking_lost = False
+                                    self.last_good_pos = (center_x, center_y)
+                                    
+                                    self.log(f"✅ 跟踪器已重新初始化到位置 ({center_x:.1f}, {center_y:.1f})")
+                                    
+                                except Exception as recovery_error:
+                                    self.log(f"❌ 跟踪恢复失败: {recovery_error}")
+                                    # Continue with clamped position
+                        else:
+                            # Reset tracking loss state if we have good tracking
+                            if self.consecutive_clamps > 0:
+                                self.log(f"✅ 跟踪恢复正常")
+                                self.consecutive_clamps = 0
+                                self.tracking_lost = False
+                            self.last_good_pos = (center_x, center_y)
                         
                         # 对于边界坐标，提供信息但不拒绝（这是正常的边界跟踪）
                         min_center_x = size_w / 2
