@@ -579,27 +579,50 @@ class LightTrackGUI:
                         target_pos = state['target_pos']
                         target_sz = state['target_sz']
                         
+                        # 提取坐标值
+                        center_x = self._safe_extract_coordinate(target_pos, 0)
+                        center_y = self._safe_extract_coordinate(target_pos, 1)
+                        size_w = self._safe_extract_coordinate(target_sz, 0)
+                        size_h = self._safe_extract_coordinate(target_sz, 1)
+                        
+                        # 验证跟踪结果是否合理
+                        # 如果中心坐标为0或负数，或者尺寸异常，则认为跟踪失败
+                        if (center_x <= 0 or center_y <= 0 or 
+                            size_w <= 0 or size_h <= 0 or
+                            center_x >= width or center_y >= height or
+                            size_w > width or size_h > height):
+                            
+                            self.log(f"检测到无效的跟踪结果: center=({center_x:.1f}, {center_y:.1f}), size=({size_w:.1f}, {size_h:.1f})")
+                            raise ValueError("跟踪结果无效")
+                        
                         # 转换为边界框格式 [cx, cy, w, h] -> [x, y, w, h]
-                        # 确保target_pos和target_sz的元素都是标量值，处理可能的数组/序列情况
-                        bbox = [
-                            int(self._safe_extract_coordinate(target_pos, 0) - self._safe_extract_coordinate(target_sz, 0)/2),
-                            int(self._safe_extract_coordinate(target_pos, 1) - self._safe_extract_coordinate(target_sz, 1)/2),
-                            int(self._safe_extract_coordinate(target_sz, 0)),
-                            int(self._safe_extract_coordinate(target_sz, 1))
+                        new_bbox = [
+                            int(center_x - size_w/2),
+                            int(center_y - size_h/2),
+                            int(size_w),
+                            int(size_h)
                         ]
+                        
+                        # 确保边界框在视频范围内
+                        new_bbox[0] = max(0, min(width - new_bbox[2], new_bbox[0]))
+                        new_bbox[1] = max(0, min(height - new_bbox[3], new_bbox[1]))
+                        
+                        bbox = new_bbox
                         
                     except Exception as e:
                         self.log(f"跟踪出错，回退到演示模式: {e}")
                         self.model = None
                         state = None
                         
-                        # 使用演示跟踪
-                        drift_x = np.random.normal(0, 2)
-                        drift_y = np.random.normal(0, 2)
-                        
-                        # 确保bbox元素都是标量值
-                        bbox[0] = max(0, min(width - int(self._safe_extract_scalar(bbox[2])), int(self._safe_extract_scalar(bbox[0])) + drift_x))
-                        bbox[1] = max(0, min(height - int(self._safe_extract_scalar(bbox[3])), int(self._safe_extract_scalar(bbox[1])) + drift_y))
+                        # 保持当前bbox位置，不要应用随机漂移（避免跳动）
+                        # 只有在后续帧中才开始演示跟踪
+                        if frame_idx > 1:
+                            drift_x = np.random.normal(0, 2)
+                            drift_y = np.random.normal(0, 2)
+                            
+                            # 确保bbox元素都是标量值
+                            bbox[0] = max(0, min(width - int(self._safe_extract_scalar(bbox[2])), int(self._safe_extract_scalar(bbox[0])) + drift_x))
+                            bbox[1] = max(0, min(height - int(self._safe_extract_scalar(bbox[3])), int(self._safe_extract_scalar(bbox[1])) + drift_y))
                 else:
                     # 演示跟踪：简单的随机漂移
                     if frame_idx > 0:
