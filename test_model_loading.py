@@ -38,9 +38,9 @@ def test_model_construction():
         
         # 使用修复后的方法构造模型
         if info.arch == 'LightTrackM_Subnet':
-            # 提供必需的path_name参数
+            # 提供必需的path_name参数，使用LightTrack-Mobile的标准配置
             model = models.LightTrackM_Subnet(
-                path_name='back_04502+cls_111111111+reg_111111111', 
+                path_name='back_04502514044521042540+cls_211000022+reg_100000111_ops_32', 
                 stride=info.stride
             )
             print("✅ LightTrackM_Subnet构造成功")
@@ -71,8 +71,8 @@ def test_path_parsing():
         
         # 测试不同格式的path_name
         test_paths = [
-            'back_04502+cls_111111111+reg_111111111',  # 不包含ops的格式
-            'back_04502+cls_111111111+reg_111111111_ops_12',  # 包含ops的格式
+            'back_04502514044521042540+cls_211000022+reg_100000111',  # 不包含ops的格式
+            'back_04502514044521042540+cls_211000022+reg_100000111_ops_32',  # 包含ops的格式（LightTrack-Mobile标准配置）
         ]
         
         for path_name in test_paths:

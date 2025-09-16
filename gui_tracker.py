@@ -359,8 +359,13 @@ class LightTrackGUI:
                 # 创建模型实例
                 # 对于LightTrackM_Subnet，需要提供path_name参数
                 if info.arch == 'LightTrackM_Subnet':
-                    # LightTrackM_Subnet需要path_name参数，使用默认值
-                    model = models.LightTrackM_Subnet(path_name='back_04502+cls_111111111+reg_111111111', stride=info.stride)
+                    # LightTrackM_Subnet需要path_name参数，使用LightTrack-Mobile的标准配置
+                    # 这个path_name定义了网络的具体架构配置：
+                    # back_04502514044521042540 - backbone架构配置
+                    # cls_211000022 - 分类头配置  
+                    # reg_100000111 - 回归头配置
+                    # ops_32 - 操作配置
+                    model = models.LightTrackM_Subnet(path_name='back_04502514044521042540+cls_211000022+reg_100000111_ops_32', stride=info.stride)
                 elif hasattr(models, info.arch):
                     # 其他模型可能不需要path_name参数
                     try:
@@ -369,7 +374,7 @@ class LightTrackGUI:
                         # 如果需要额外参数，尝试提供默认值
                         self.log(f"模型构造需要额外参数: {e}")
                         if 'path_name' in str(e):
-                            model = models.__dict__[info.arch](path_name='back_04502+cls_111111111+reg_111111111', stride=info.stride)
+                            model = models.__dict__[info.arch](path_name='back_04502514044521042540+cls_211000022+reg_100000111_ops_32', stride=info.stride)
                         else:
                             raise
                 else:
