@@ -161,16 +161,27 @@ class Lighttrack(object):
         x_crop = x_crop.unsqueeze(0)
         debug = True
         if debug:
-            target_pos, target_sz, _, cls_score = self.update(net, x_crop.cuda(), target_pos, target_sz * scale_z,
+            target_pos, target_sz, confidence_score, cls_score = self.update(net, x_crop.cuda(), target_pos, target_sz * scale_z,
                                                               window, scale_z, p, debug=debug)
             state['cls_score'] = cls_score
+            state['confidence'] = confidence_score
         else:
-            target_pos, target_sz, _ = self.update(net, x_crop.cuda(), target_pos, target_sz * scale_z,
+            target_pos, target_sz, confidence_score = self.update(net, x_crop.cuda(), target_pos, target_sz * scale_z,
                                                    window, scale_z, p, debug=debug)
-        # Fix: Clamp center coordinates considering bounding box size
+            state['confidence'] = confidence_score
+        
+        # Store raw tracking results for diagnostics
+        raw_pos_x, raw_pos_y = target_pos[0], target_pos[1]
+        state['raw_target_pos'] = np.array([raw_pos_x, raw_pos_y])
+        
+        # Apply coordinate clamping to ensure bounding box stays within image bounds
         # Center must be at least bbox_size/2 from edges to prevent bbox extending outside image
         target_pos[0] = max(target_sz[0]/2, min(state['im_w'] - target_sz[0]/2, target_pos[0]))
         target_pos[1] = max(target_sz[1]/2, min(state['im_h'] - target_sz[1]/2, target_pos[1]))
+        
+        # Store clamping information for diagnostics
+        was_clamped = (abs(raw_pos_x - target_pos[0]) > 0.1) or (abs(raw_pos_y - target_pos[1]) > 0.1)
+        state['was_clamped'] = was_clamped
         target_sz[0] = max(10, min(state['im_w'], target_sz[0]))
         target_sz[1] = max(10, min(state['im_h'], target_sz[1]))
         state['target_pos'] = target_pos
