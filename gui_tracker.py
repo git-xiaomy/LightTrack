@@ -288,17 +288,14 @@ class LightTrackGUI:
         
         if self.model is not None:
             self.log("✅ 使用了真实LightTrack模型进行跟踪")
+            self.log("   💡 即使某些帧跟踪失败也保持真实模型激活，跳过失败帧继续")
             self.log("   如果边界框正确跟踪了目标，说明模型工作正常")
-            self.log("   如果跟踪失效或跳转到左上角，说明模型虽然加载但跟踪性能有限")
         else:
-            self.log("🎭 使用了演示模式（非真实跟踪）")
-            self.log("💡 这是正常的错误恢复行为，系统工作正确!")
-            self.log("   演示模式启用原因:")
+            self.log("❌ 真实模型未能加载或初始化")
+            self.log("   可能原因:")
             self.log("   1. 模型文件不存在或加载失败")
             self.log("   2. PyTorch依赖问题")
             self.log("   3. 跟踪初始化失败")
-            self.log("   4. 跟踪过程中检测到无效坐标而安全回退")
-            self.log("   ✅ 关键: 系统成功避免了崩溃，并继续完成了跟踪任务")
         
         self.log(f"🎯 最终边界框位置: {final_bbox}")  
         self.log(f"📹 总处理帧数: {total_frames}")
@@ -306,11 +303,10 @@ class LightTrackGUI:
         # 判断是否出现左上角问题
         if final_bbox[0] <= 5 and final_bbox[1] <= 5:
             self.log("⚠️ 警告: 最终位置接近左上角，可能存在跟踪问题")
-            self.log("💡 但如果使用的是演示模式，这可能是随机漂移的结果")
         else:
             self.log("✅ 最终位置正常，未出现左上角问题")
         
-        self.log("🚀 总结: GUI跟踪系统运行成功，具备完善的错误恢复机制")
+        self.log("🚀 总结: GUI跟踪系统运行成功，使用跳过策略处理失败帧")
         self.log("="*50)
     
     def setup_ui(self):
@@ -737,7 +733,7 @@ class LightTrackGUI:
                             self.log(f"      3. 目标外观变化过大")
                             self.log(f"      4. 模型对当前场景适应性差")
                             self.log(f"   💡 注意: 验证已优化支持边缘跟踪，只拒绝会导致边界框超出视频范围的坐标")
-                            self.log(f"   💡 系统将切换到演示模式，这是正常的错误恢复行为")
+                            self.log(f"   🔄 系统将跳过此帧，保持真实模型继续处理后续帧")
                             raise ValueError("跟踪结果无效")
                         
                         # 转换为边界框格式 [cx, cy, w, h] -> [x, y, w, h]
@@ -759,32 +755,10 @@ class LightTrackGUI:
                             self.log(f"✅ 第{frame_idx}帧真实模型跟踪成功: bbox=[{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}]")
                         
                     except Exception as e:
-                        self.log(f"❌ 第{frame_idx}帧跟踪出错，回退到演示模式: {e}")
-                        self.log(f"🔄 从此帧开始将使用演示模式继续跟踪")
-                        self.log("💡 注意: 这是正常的错误恢复机制，确保跟踪能够继续进行")
-                        self.log("📋 真实模型失败后切换到演示模式是预期行为，避免程序崩溃")
-                        self.model = None
-                        state = None
-                        
-                        # 保持当前bbox位置，不要应用随机漂移（避免跳动）
-                        # 只有在后续帧中才开始演示跟踪
-                        if frame_idx > 1:
-                            drift_x = np.random.normal(0, 2)
-                            drift_y = np.random.normal(0, 2)
-                            
-                            # 确保bbox元素都是标量值，并添加额外的安全检查
-                            try:
-                                new_x = int(self._safe_extract_scalar(bbox[0])) + int(drift_x)
-                                new_y = int(self._safe_extract_scalar(bbox[1])) + int(drift_y)
-                                bbox_w = int(self._safe_extract_scalar(bbox[2]))
-                                bbox_h = int(self._safe_extract_scalar(bbox[3]))
-                                
-                                bbox[0] = max(0, min(width - bbox_w, new_x))
-                                bbox[1] = max(0, min(height - bbox_h, new_y))
-                            except Exception as bbox_error:
-                                self.log(f"⚠️  演示模式bbox更新出错: {bbox_error}")
-                                # 如果连演示模式都有问题，保持bbox不变
-                                pass
+                        self.log(f"⚠️  第{frame_idx}帧跟踪失败，跳过此帧继续: {e}")
+                        self.log(f"💡 保持真实模型激活，继续处理后续帧")
+                        # 保持当前bbox位置不变，不切换到演示模式
+                        # model 和 state 保持不变，继续使用真实模型
                 else:
                     # 演示跟踪：简单的随机漂移
                     if frame_idx % 30 == 0:  # 每30帧提醒一次
